@@ -4,8 +4,10 @@ An app used to figure out where swadges are.
 """
 
 from autobahn.asyncio.wamp import ApplicationSession, ApplicationRunner
-from autobahn.wamp import auth
+from autobahn.wamp import auth, SubscribeOptions
 from collections import deque
+import threading
+import requests
 import asyncio
 import time
 import re
@@ -40,13 +42,14 @@ def lighten(amt, color):
            | int(amt * ((color >> 8) & 0xff)) << 8 \
            | int(amt * (color & 0xff)) & 0xff
 
+
 # WAMP Realm; doesn't change
 WAMP_REALM = "swadges"
 WAMP_URL = "ws://api.swadge.com:1337/ws"
 
 # WAMP Credentials; you will get your own later
-WAMP_USER = "finder"
-WAMP_PASSWORD = "secret"
+WAMP_USER = "demo"
+WAMP_PASSWORD = "hunter2"
 
 # This is a unique name for this game
 # Change this before you run it, otherwise it will conflict!
@@ -75,8 +78,10 @@ GAME_JOIN_SEQUENCE = "babaes"
 # - concerts
 GAME_JOIN_LOCATION = ""
 
+# Minimum number of seconds between scan requests per-badge
+SCAN_FREQ = 60
 
-FIND_HOST = "find.hackafe.net"
+FIND_HOST = "http://find.hackafe.net"
 FIND_GROUP = "hackafe"
 
 LOC_TEA_ROOM = "tea_room"
@@ -164,9 +169,6 @@ class GameComponent(ApplicationSession):
         """
         self.join(WAMP_REALM, ["wampcra"], WAMP_USER)
 
-    def udp_thread(self):
-        pass
-
     def scan_thread(self):
         while True:
             try:
@@ -174,14 +176,17 @@ class GameComponent(ApplicationSession):
                 badge_info = self.badges[next_badge]
 
                 payload = {
-                    "username": "swadge_" + str(badge_id),
+                    "username": "swadge_" + str(next_badge),
                     "group": FIND_GROUP,
                     "time": int(badge_info.last_scan_time * 1000),
-                    "wifi-fingerprint": [{"mac": format_mac(mac).upper(), "rssi": rssi} for
-                                         mac, rssi in badge_info.last_scan]
+                    "wifi-fingerprint": [{"mac": scan['bssid'].upper(),
+                                          "rssi": scan['rssi']} for
+                                         scan in badge_info.last_scan]
                 }
 
-                if next_badge in learn_badges:
+                badge_info.last_scan = []
+
+                if next_badge in self.learn_badges:
                     learn_info = self.learn_badges[next_badge]
                     if learn_info.group:
                         payload["location"] = self.learn_groups[learn_info.group]
@@ -236,17 +241,25 @@ class GameComponent(ApplicationSession):
             players = res.kwresults.get("players", [])
             await asyncio.gather(*(self.on_player_join(player) for player in players))
 
+    async def on_new_badge(self, badge_id):
+        print("New badge: " + str(badge_id))
+        self.badges[badge_id] = BadgeInfo(badge_id)
+
     async def on_scan(self, timestamp, stations, badge_id=None):
         badge = self.badges.get(badge_id, None)
 
-        if not player:
+        if not badge:
             badge = BadgeInfo(badge_id)
             self.badges[badge_id] = badge
 
-        badge.last_scan = stations
         badge.last_scan_time = time.time()
-        if badge_id not in self.dirty_queue:
-            self.dirty_queue.append(badge_id)
+        if len(stations) == 0:
+            print("Sending off {} total stations from {}".format(len(badge.last_scan), badge_id))
+            if badge_id not in self.dirty_queue:
+                self.dirty_queue.append(badge_id)
+        else:
+            print("Got scan with {} stations from {}".format(len(stations), badge_id))
+            badge.last_scan.extend(stations)
 
     async def set_lights(self, badge_id):
         # Set the lights for the badge to simple colors
@@ -254,13 +267,37 @@ class GameComponent(ApplicationSession):
         if badge_id in self.learn_badges:
             group = self.learn_badges[badge_id].group
             self.publish('badge.' + str(badge_id) + '.lights_static',
-                         [lighten(.1, Color.RAINBOW[group % len(Color.RAINBOW)])] * 4
-                         if group is not None else [0, 0, 0, 0])
+                         *([lighten(.01, Color.RAINBOW[group % len(Color.RAINBOW)])] * 4
+                         if group is not None else [lighten(.01, Color.WHITE)] * 4))
 
-    async def do_broadcast(self):
-        badge, loc = await self.location_broadcasts.get()
+    async def do_broadcasts(self):
+        while True:
+            badge, loc = await self.location_broadcasts.get()
 
-        self.publish('badge.' + str(badge) + '.location', [loc, 'find'])
+            clean_loc = loc.replace(' ', '_').lower()
+
+            print("Badge #" + str(badge) + " located at " + LOCATIONS.get(loc, loc))
+            self.publish('badge.' + str(badge) + '.location', [clean_loc, 'find'], {'badge_id': badge})
+            count = sum((b.last_location == loc for b in self.badges.values()))
+            self.publish('location.' + clean_loc + '.occupants', [count], {'location': clean_loc})
+
+    async def do_scan_requests(self):
+        while True:
+            cur_time = time.time()
+            next_request = 2147483647
+
+            for badge in self.badges.values():
+                expire = badge.last_scan_time + SCAN_FREQ
+                if expire < cur_time \
+                        and badge.badge_id not in self.dirty_queue:
+                    print("Requesting scan from " + str(badge.badge_id))
+                    self.publish('badge.' + str(badge.badge_id) + '.request_scan')
+                elif expire >= cur_time:
+                    print("Not request scan from" + str(badge.badge_id))
+                    # We'll sleep until the next badge expires
+                    if expire < next_request:
+                        next_request = expire
+            await asyncio.sleep(max(next_request - time.time(), .1))
 
     async def on_player_join(self, badge_id):
         """
@@ -287,6 +324,26 @@ class GameComponent(ApplicationSession):
         print("Badge #{} left".format(badge_id))
         del self.learn_badges[badge_id]
 
+    async def on_group_create(self, location):
+        self.learn_groups.append(location)
+
+    async def on_group_set(self, i, location):
+        try:
+            self.learn_groups[i] = location
+        except IndexError:
+            pass
+
+    async def on_group_add(self, group, players):
+        for p in players:
+            if p in self.learn_badges:
+                self.learn_badges[p].group = group
+
+    async def get_groups(self):
+        return {'groups': [{'location': l,
+                            'display': LOCATIONS.get(l, l),
+                            'badges': [b.badge_id for b in self.learn_badges if b.group == i]}
+                           for i, l in enumerate(self.learn_groups)]}
+
     async def onJoin(self, details):
         """
         WAMP calls this after successfully joining the realm.
@@ -298,10 +355,23 @@ class GameComponent(ApplicationSession):
         await self.subscribe(self.on_player_join, 'game.' + GAME_ID + '.player.join')
         await self.subscribe(self.on_player_leave, 'game.' + GAME_ID + '.player.leave')
         await self.subscribe(self.game_register, 'game.request_register')
+        await self.subscribe(self.on_scan, 'badge..scan', options=SubscribeOptions(match='wildcard'))
+        await self.subscribe(self.on_new_badge, 'badges.new')
+        await self.register(self.on_group_create, 'game.' + GAME_ID + '.local.group_create')
+        await self.register(self.on_group_set, 'game.' + GAME_ID + '.local.group_set')
+        await self.register(self.on_group_add, 'game.' + GAME_ID + '.local.group_add')
+        await self.register(self.get_groups, 'game.' + GAME_ID + '.local.get_groups')
         await self.game_register()
 
-        while True:
-            await self.do_broadcast()
+        res = await self.call('badges.list')
+        badges = res.kwresults.get("badges")
+        for badge_id in badges:
+            await self.on_new_badge(badge_id)
+
+        threading.Thread(target=self.scan_thread, daemon=True).start()
+
+        await asyncio.gather(self.do_broadcasts(),
+                             self.do_scan_requests())
 
     def onDisconnect(self):
         """
