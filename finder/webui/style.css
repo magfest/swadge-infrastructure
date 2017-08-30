@@ -1,0 +1,55 @@
+.question {
+    display: block;
+    font-size: 36pt;
+    font-style: italic;
+}
+
+.button-marker, .progress-bar {
+    display: inline-block;
+    border: black 1px solid;
+    padding: 3px;
+    border-radius: 3px;
+    text-transform: capitalize;
+    text-align: center;
+    margin-top: 5px;
+}
+
+.button-marker {
+    min-width: 120px;
+}
+
+.progress-bar:empty {
+    opacity: 0;
+}
+
+.progress-bar {
+    top: 0;
+    bottom: 0;
+    height: auto;
+    display: table-cell;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.button-marker, .answer-text, .progress-bar {
+    font-weight: bold;
+    font-size: 28pt;
+    line-height: 1.3em;
+    margin-left: 10px;
+}
+
+.winner {
+  border: green 3px solid;
+}
+
+.winner:before {
+  content: '* ';
+}
+
+.sim-press {
+
+}
+
+* {
+  margin-top: 5px;
+}

@@ -79,7 +79,7 @@ GAME_JOIN_SEQUENCE = "babaes"
 GAME_JOIN_LOCATION = ""
 
 # Minimum number of seconds between scan requests per-badge
-SCAN_FREQ = 60
+SCAN_FREQ = 10
 
 FIND_HOST = "http://find.hackafe.net"
 FIND_GROUP = "hackafe"
@@ -188,7 +188,8 @@ class GameComponent(ApplicationSession):
 
                 if next_badge in self.learn_badges:
                     learn_info = self.learn_badges[next_badge]
-                    if learn_info.group:
+                    print(learn_info)
+                    if learn_info.group is not None:
                         payload["location"] = self.learn_groups[learn_info.group]
 
                         res = requests.post(FIND_HOST + "/learn", json=payload)
@@ -265,6 +266,7 @@ class GameComponent(ApplicationSession):
         # Set the lights for the badge to simple colors
         # Note that the order of the lights will be [BOTTOM_LEFT, BOTTOM_RIGHT, TOP_RIGHT, TOP_LEFT]
         if badge_id in self.learn_badges:
+            print(self.learn_badges)
             group = self.learn_badges[badge_id].group
             self.publish('badge.' + str(badge_id) + '.lights_static',
                          *([lighten(.01, Color.RAINBOW[group % len(Color.RAINBOW)])] * 4
@@ -330,19 +332,28 @@ class GameComponent(ApplicationSession):
     async def on_group_set(self, i, location):
         try:
             self.learn_groups[i] = location
+            print(i, location)
+            return {"success": True, "message": "Group " + str(i) + " changed to location " + location}
         except IndexError:
             pass
 
-    async def on_group_add(self, group, players):
-        for p in players:
-            if p in self.learn_badges:
-                self.learn_badges[p].group = group
+    async def on_group_add(self, player, group):
+        if player in self.learn_badges:
+            self.learn_badges[player].group = group
 
     async def get_groups(self):
+        print(self.learn_badges)
+        for k in self.learn_badges.values():
+            print(k.badge_id)
+            print(k.group)
         return {'groups': [{'location': l,
                             'display': LOCATIONS.get(l, l),
-                            'badges': [b.badge_id for b in self.learn_badges if b.group == i]}
-                           for i, l in enumerate(self.learn_groups)]}
+                            'badges': [b.badge_id for b in self.learn_badges.values()
+                                       if b.group == i]}
+                           for i, l in enumerate(self.learn_groups)],
+                'locations': list(LOCATIONS.keys()),
+                'display_locations': LOCATIONS,
+                'loose_badges': [b.badge_id for b in self.learn_badges.values() if b.group is None]}
 
     async def onJoin(self, details):
         """
