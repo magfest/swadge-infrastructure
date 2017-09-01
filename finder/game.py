@@ -9,6 +9,7 @@ from collections import deque
 import threading
 import requests
 import asyncio
+import random
 import time
 import re
 
@@ -79,10 +80,10 @@ GAME_JOIN_SEQUENCE = "babaes"
 GAME_JOIN_LOCATION = ""
 
 # Minimum number of seconds between scan requests per-badge
-SCAN_FREQ = 10
+SCAN_FREQ = 60
 
-FIND_HOST = "http://find.hackafe.net"
-FIND_GROUP = "hackafe"
+FIND_HOST = "http://find.magevent.net"
+FIND_GROUP = "labs2017"
 
 LOC_TEA_ROOM = "tea_room"
 LOC_TECHOPS = "techops"
@@ -105,6 +106,7 @@ LOC_TABLETOP = "tabletop"
 LOC_REGISTRATION = "registration"
 LOC_VIDEO_ROOM = "video_room"
 LOC_TOOOL = "toool"
+LOC_130 = "130"
 LOC_UNKNOWN = "unknown"
 
 
@@ -130,6 +132,7 @@ LOCATIONS = {
     LOC_REGISTRATION: "Registration",
     LOC_VIDEO_ROOM: "Video Room",
     LOC_TOOOL: "Toool",
+    LOC_130: "130",
     LOC_UNKNOWN: "Nobody Knooows"
 }
 
@@ -150,7 +153,7 @@ class BadgeInfo:
     def __init__(self, badge_id):
         self.badge_id = badge_id
         self.last_scan = []
-        self.last_scan_time = 0
+        self.last_scan_time = time.time() - random.randint(0, SCAN_FREQ)
         self.last_location = None
 
 
